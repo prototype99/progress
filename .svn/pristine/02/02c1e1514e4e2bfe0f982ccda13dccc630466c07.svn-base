@@ -1,0 +1,88 @@
+https://unicode-org.atlassian.net/browse/ICU-13834
+https://github.com/unicode-org/icu/pull/105
+https://github.com/unicode-org/icu/commit/2988a497a98e818cb1f4b8eb435ed0d6e2477518
+
+--- /source/common/putilimp.h
++++ /source/common/putilimp.h
+@@ -586,6 +586,49 @@
+ #  endif
+ #endif
+ 
++
++#ifdef __cplusplus
++/**
++ * Pin a buffer capacity such that doing pointer arithmetic
++ * on the destination pointer and capacity cannot overflow.
++ *
++ * The pinned capacity must fulfill the following conditions (for positive capacities):
++ *   - dest + capacity is a valid pointer according to the machine arcitecture (AS/400, 64-bit, etc.)
++ *   - (dest + capacity) >= dest
++ *   - The size (in bytes) of T[capacity] does not exceed 0x7fffffff
++ *
++ * @param dest the destination buffer pointer.
++ * @param capacity the requested buffer capacity, in units of type T.
++ * @return the pinned capacity.
++ * @internal
++ */
++template <typename T>
++inline int32_t pinCapacity(T *dest, int32_t capacity) {
++    if (capacity <= 0) { return capacity; }
++
++    uintptr_t destInt = (uintptr_t)dest;
++    uintptr_t maxInt;
++
++#  if U_PLATFORM == U_PF_OS390 && !defined(_LP64)
++    // We have 31-bit pointers.
++    maxInt = 0x7fffffff;
++#  elif U_PLATFORM == U_PF_OS400
++    maxInt = (uintptr_t)uprv_maximumPtr((void *)dest);
++#  else
++    maxInt = destInt + 0x7fffffffu;
++    if (maxInt < destInt) {
++        // Less than 2GB to the end of the address space.
++        // Pin to that to prevent address overflow.
++        maxInt = (uintptr_t)-1;
++    }
++#  endif
++
++    uintptr_t maxBytes = maxInt - destInt;  // max. 2GB
++    int32_t maxCapacity = (int32_t)(maxBytes / sizeof(T));
++    return capacity <= maxCapacity ? capacity : maxCapacity;
++}
++#endif   // __cplusplus
++
+ /*  Dynamic Library Functions */
+ 
+ typedef void (UVoidFunction)(void);
+--- /source/common/ucnv.cpp
++++ /source/common/ucnv.cpp
+@@ -1743,13 +1743,9 @@
+     }
+     if(srcLength>0) {
+         srcLimit=src+srcLength;
++        destCapacity=pinCapacity(dest, destCapacity);
+         destLimit=dest+destCapacity;
+ 
+-        /* pin the destination limit to U_MAX_PTR; NULL check is for OS/400 */
+-        if(destLimit<dest || (destLimit==NULL && dest!=NULL)) {
+-            destLimit=(char *)U_MAX_PTR(dest);
+-        }
+-
+         /* perform the conversion */
+         ucnv_fromUnicode(cnv, &dest, destLimit, &src, srcLimit, 0, TRUE, pErrorCode);
+         destLength=(int32_t)(dest-originalDest);
+@@ -1803,13 +1799,9 @@
+     }
+     if(srcLength>0) {
+         srcLimit=src+srcLength;
++        destCapacity=pinCapacity(dest, destCapacity);
+         destLimit=dest+destCapacity;
+ 
+-        /* pin the destination limit to U_MAX_PTR; NULL check is for OS/400 */
+-        if(destLimit<dest || (destLimit==NULL && dest!=NULL)) {
+-            destLimit=(UChar *)U_MAX_PTR(dest);
+-        }
+-
+         /* perform the conversion */
+         ucnv_toUnicode(cnv, &dest, destLimit, &src, srcLimit, 0, TRUE, pErrorCode);
+         destLength=(int32_t)(dest-originalDest);
